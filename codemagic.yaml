@@ -1,0 +1,113 @@
+workflows:
+  assetchopper-expo-build:
+    name: AssetChopper Expo iOS
+    max_build_duration: 60
+    instance_type: mac_mini_m2
+
+    integrations:
+      app_store_connect: codemagicFlutter
+
+    environment:
+      # MANUAL code signing — use the certificate + provisioning profiles that
+      # were uploaded to Codemagic (Teams → Code signing identities), referenced
+      # here by their Reference names. This replaces the automatic
+      # `fetch-signing-files` approach, which was pulling a stale profile from
+      # Apple that lacked the App Groups capability. With references you must NOT
+      # set distribution_type / bundle_identifier.
+      ios_signing:
+        provisioning_profiles:
+          - profile: "Asset Chopper"    # com.chopper.app
+        certificates:
+          - certificate: "codemagicFlutter"
+      groups:
+        - Ios_signing
+      node: latest
+      # Use the latest Xcode (26) so we build against the iOS 26 SDK — Apple now
+      # rejects App Store / TestFlight uploads built with an older SDK. Xcode 26's
+      # clang rejects the older `fmt` C++ lib RN 0.79 ships ("call to consteval
+      # function ... is not a constant expression"); the withFmtConsteval config
+      # plugin (plugins/withFmtConsteval.js) patches the Podfile to neutralise
+      # that at build time, so we no longer need to pin an older Xcode.
+      xcode: latest
+      cocoapods: default
+      vars:
+        IOS_BUNDLE_IDENTIFIER: com.chopper.app
+        # AssetChopper is SDK 53 / RN 0.79 on the OLD architecture.
+        RCT_NEW_ARCH_ENABLED: "0"
+
+    scripts:
+      - name: Print iOS signing assets detected by Codemagic
+        script: |
+          echo "== Code signing identities (name + SHA-1) =="
+          security find-identity -v -p codesigning || true
+
+          echo
+          echo "== Provisioning profiles available =="
+          PROFILE_DIR="$HOME/Library/MobileDevice/Provisioning Profiles"
+          if [[ -d "$PROFILE_DIR" ]]; then
+            find "$PROFILE_DIR" -name "*.mobileprovision" -maxdepth 1 | while read -r profile; do
+              echo
+              echo "Profile file: $(basename "$profile")"
+              security cms -D -i "$profile" > /tmp/codemagic_profile.plist
+              /usr/libexec/PlistBuddy -c "Print :Name" /tmp/codemagic_profile.plist || true
+              /usr/libexec/PlistBuddy -c "Print :UUID" /tmp/codemagic_profile.plist || true
+              /usr/libexec/PlistBuddy -c "Print :Entitlements:application-identifier" /tmp/codemagic_profile.plist || true
+            done
+          else
+            echo "No provisioning profiles directory found at $PROFILE_DIR"
+          fi
+
+      - name: Install dependencies (pnpm)
+        script: |
+          # Run pnpm via npx, NOT corepack. The corepack bundled on the Xcode 16.2
+          # build image has stale signing keys and can't verify the pnpm download
+          # ("Cannot find matching keyid" at verifySignature). npx fetches
+          # pnpm@10.33.0 straight from npm and runs it — no corepack, no global
+          # install, no PATH games.
+          npx --yes pnpm@10.33.0 install --no-frozen-lockfile
+
+      - name: Set unique build number
+        script: |
+          # Unix timestamp => always higher than the last upload, so App Store
+          # Connect never rejects a build for a duplicate version. Applied to the
+          # native project below (agvtool), after prebuild.
+          echo "ASSETCHOPPER_BUILD_NUMBER=$(date +%s)" >> $CM_ENV
+
+      - name: Expo prebuild iOS
+        script: |
+          npx expo prebuild --platform ios --clean
+
+      - name: Apply build number (CFBundleVersion)
+        script: |
+          # app.json has no dynamic build number, so set CFBundleVersion here.
+          cd ios
+          agvtool new-version -all "$ASSETCHOPPER_BUILD_NUMBER"
+
+      - name: Apply provisioning profiles to the project
+        script: |
+          # The certificate + profiles come from the ios_signing references above
+          # (Codemagic installs them automatically). Just point the Xcode project
+          # at them for manual signing.
+          cd ios
+          xcode-project use-profiles
+
+      - name: Install iOS pods
+        script: |
+          cd ios
+          pod install --repo-update
+
+      - name: Build IPA
+        script: |
+          xcode-project build-ipa \
+            --workspace ios/*.xcworkspace \
+            --scheme AssetChopper \
+            --config Release
+
+    artifacts:
+      - build/ios/ipa/*.ipa
+      - /tmp/xcodebuild_logs/*.log
+
+    publishing:
+      app_store_connect:
+        auth: integration
+        submit_to_testflight: true
