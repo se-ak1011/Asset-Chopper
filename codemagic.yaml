@@ -1,0 +1,96 @@
+workflows:
+  assetchopper-expo-build:
+    name: AssetChopper Expo iOS
+    max_build_duration: 60
+    instance_type: mac_mini_m2
+
+    integrations:
+      app_store_connect: codemagicFlutter
+
+    environment:
+      # MANUAL code signing — use the certificate + provisioning profile uploaded
+      # to Codemagic (Teams → Code signing identities), referenced here by their
+      # Reference names. Keep distribution_type / bundle_identifier unset when
+      # using explicit signing references.
+      ios_signing:
+        provisioning_profiles:
+          - profile: "Asset Chopper"    # com.chopper.app
+        certificates:
+          - certificate: "codemagicFlutter"
+      groups:
+        - Ios_signing
+      node: latest
+      # Xcode latest may use clang versions that reject RN 0.79 fmt consteval
+      # code. The Expo config plugin at plugins/withFmtConsteval.js patches
+      # the generated Podfile during prebuild to define FMT_USE_CONSTEVAL=0
+      # for the fmt pod before pod install/build.
+      xcode: latest
+      cocoapods: default
+      vars:
+        IOS_BUNDLE_IDENTIFIER: com.chopper.app
+        RCT_NEW_ARCH_ENABLED: "0"
+
+    scripts:
+      - name: Print iOS signing assets detected by Codemagic
+        script: |
+          echo "== Code signing identities (name + SHA-1) =="
+          security find-identity -v -p codesigning || true
+
+          echo
+          echo "== Provisioning profiles available =="
+          PROFILE_DIR="$HOME/Library/MobileDevice/Provisioning Profiles"
+          if [[ -d "$PROFILE_DIR" ]]; then
+            find "$PROFILE_DIR" -name "*.mobileprovision" -maxdepth 1 | while read -r profile; do
+              echo
+              echo "Profile file: $(basename "$profile")"
+              security cms -D -i "$profile" > /tmp/codemagic_profile.plist
+              /usr/libexec/PlistBuddy -c "Print :Name" /tmp/codemagic_profile.plist || true
+              /usr/libexec/PlistBuddy -c "Print :UUID" /tmp/codemagic_profile.plist || true
+              /usr/libexec/PlistBuddy -c "Print :Entitlements:application-identifier" /tmp/codemagic_profile.plist || true
+            done
+          else
+            echo "No provisioning profiles directory found at $PROFILE_DIR"
+          fi
+
+      - name: Install dependencies (pnpm)
+        script: |
+          npx --yes pnpm@10.33.0 install --no-frozen-lockfile
+
+      - name: Set unique build number
+        script: |
+          echo "ASSETCHOPPER_BUILD_NUMBER=$(date +%s)" >> $CM_ENV
+
+      - name: Expo prebuild iOS
+        script: |
+          npx expo prebuild --platform ios --clean
+
+      - name: Apply build number (CFBundleVersion)
+        script: |
+          cd ios
+          agvtool new-version -all "$ASSETCHOPPER_BUILD_NUMBER"
+
+      - name: Apply provisioning profiles to the project
+        script: |
+          cd ios
+          xcode-project use-profiles
+
+      - name: Install iOS pods
+        script: |
+          cd ios
+          pod install --repo-update
+
+      - name: Build IPA
+        script: |
+          xcode-project build-ipa \
+            --workspace ios/*.xcworkspace \
+            --scheme AssetChopper \
+            --config Release
+
+    artifacts:
+      - build/ios/ipa/*.ipa
+      - /tmp/xcodebuild_logs/*.log
+
+    publishing:
+      app_store_connect:
+        auth: integration
+        submit_to_testflight: true
