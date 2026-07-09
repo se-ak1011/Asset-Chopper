@@ -20,6 +20,10 @@ workflows:
       groups:
         - Ios_signing
       node: latest
+      # Xcode latest may use clang versions that reject RN 0.79 fmt consteval
+      # code. The Expo config plugin at plugins/withFmtConsteval.js patches
+      # the generated Podfile during prebuild to define FMT_USE_CONSTEVAL=0
+      # for the fmt pod before pod install/build.
       xcode: latest
       cocoapods: default
       vars:

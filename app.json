@@ -1,1 +1,30 @@
-{"expo":{"name":"AssetChopper","slug":"assetchopper","scheme":"assetchopper","version":"1.0.0","orientation":"portrait","userInterfaceStyle":"dark","newArchEnabled":false,"ios":{"bundleIdentifier":"com.chopper.app","supportsTablet":true,"infoPlist":{"NSPhotoLibraryUsageDescription":"AssetChopper imports asset sheets from your photo library.","NSPhotoLibraryAddUsageDescription":"AssetChopper can export chopped assets for sharing."}},"android":{"package":"com.chopper.app"},"plugins":["expo-image-picker","expo-document-picker"],"assetBundlePatterns":["**/*"]}}
+{
+  "expo": {
+    "name": "AssetChopper",
+    "slug": "assetchopper",
+    "scheme": "assetchopper",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "newArchEnabled": false,
+    "ios": {
+      "bundleIdentifier": "com.chopper.app",
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSPhotoLibraryUsageDescription": "AssetChopper imports asset sheets from your photo library.",
+        "NSPhotoLibraryAddUsageDescription": "AssetChopper can export chopped assets for sharing."
+      }
+    },
+    "android": {
+      "package": "com.chopper.app"
+    },
+    "plugins": [
+      "expo-image-picker",
+      "expo-document-picker",
+      "./plugins/withFmtConsteval"
+    ],
+    "assetBundlePatterns": [
+      "**/*"
+    ]
+  }
+}
