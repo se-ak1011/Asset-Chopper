@@ -1,0 +1,134 @@
+workflows:
+  assetchopper-expo-build:
+    name: AssetChopper Expo iOS
+    max_build_duration: 60
+    instance_type: mac_mini_m2
+
+    integrations:
+      app_store_connect: codemagicFlutter
+
+    environment:
+      # MANUAL code signing — use the certificate + provisioning profile uploaded
+      # to Codemagic (Teams → Code signing identities), referenced here by their
+      # Reference names. Keep distribution_type / bundle_identifier unset when
+      # using explicit signing references.
+      ios_signing:
+        provisioning_profiles:
+          - profile: "Asset Chopper"    # com.chopper.app
+        certificates:
+          - certificate: "codemagicFlutter"
+      groups:
+        - Ios_signing
+      node: latest
+      # Xcode latest may use clang versions that reject RN fmt consteval
+      # code. The Expo config plugin patches the Podfile, and a post-pod
+      # Codemagic script below verifies/enforces the fmt pod build settings.
+      xcode: latest
+      cocoapods: default
+      vars:
+        IOS_BUNDLE_IDENTIFIER: com.chopper.app
+        RCT_NEW_ARCH_ENABLED: "0"
+
+    scripts:
+      - name: Print iOS signing assets detected by Codemagic
+        script: |
+          echo "== Code signing identities (name + SHA-1) =="
+          security find-identity -v -p codesigning || true
+
+          echo
+          echo "== Provisioning profiles available =="
+          PROFILE_DIR="$HOME/Library/MobileDevice/Provisioning Profiles"
+          if [[ -d "$PROFILE_DIR" ]]; then
+            find "$PROFILE_DIR" -name "*.mobileprovision" -maxdepth 1 | while read -r profile; do
+              echo
+              echo "Profile file: $(basename "$profile")"
+              security cms -D -i "$profile" > /tmp/codemagic_profile.plist
+              /usr/libexec/PlistBuddy -c "Print :Name" /tmp/codemagic_profile.plist || true
+              /usr/libexec/PlistBuddy -c "Print :UUID" /tmp/codemagic_profile.plist || true
+              /usr/libexec/PlistBuddy -c "Print :Entitlements:application-identifier" /tmp/codemagic_profile.plist || true
+            done
+          else
+            echo "No provisioning profiles directory found at $PROFILE_DIR"
+          fi
+
+      - name: Install dependencies (pnpm)
+        script: |
+          npx --yes pnpm@10.33.0 install --no-frozen-lockfile
+
+      - name: Set unique build number
+        script: |
+          echo "ASSETCHOPPER_BUILD_NUMBER=$(date +%s)" >> $CM_ENV
+
+      - name: Expo prebuild iOS
+        script: |
+          npx expo prebuild --platform ios --clean
+
+      - name: Apply build number (CFBundleVersion)
+        script: |
+          cd ios
+          agvtool new-version -all "$ASSETCHOPPER_BUILD_NUMBER"
+
+      - name: Apply provisioning profiles to the project
+        script: |
+          cd ios
+          xcode-project use-profiles
+
+      - name: Install iOS pods
+        script: |
+          cd ios
+          pod install --repo-update
+
+
+      - name: Enforce fmt workaround for Xcode 26 clang
+        script: |
+          # RN's fmt pod can fail to compile on newer Xcode clang when it takes
+          # the C++20 consteval path. Keep the workaround here as a CI safety net
+          # even though plugins/withFmtConsteval.js also patches the Podfile at
+          # Expo prebuild time.
+          ruby <<'RUBY'
+          require 'xcodeproj'
+
+          Dir.glob('ios/Pods/fmt/include/fmt/{base,core}.h').each do |header|
+            text = File.read(header)
+            patched = text.gsub(
+              '#elif defined(__apple_build_version__) && __apple_build_version__ < 14000029L',
+              '#elif defined(__apple_build_version__)'
+            )
+            File.write(header, patched) if patched != text
+          end
+
+          project_path = 'ios/Pods/Pods.xcodeproj'
+          project = Xcodeproj::Project.open(project_path)
+          target = project.targets.find { |candidate| candidate.name == 'fmt' }
+          raise 'Could not find fmt pod target' unless target
+
+          target.build_configurations.each do |config|
+            defs = config.build_settings['GCC_PREPROCESSOR_DEFINITIONS'] || ['$(inherited)']
+            defs = [defs] unless defs.is_a?(Array)
+            defs << 'FMT_USE_CONSTEVAL=0' unless defs.include?('FMT_USE_CONSTEVAL=0')
+            config.build_settings['GCC_PREPROCESSOR_DEFINITIONS'] = defs
+            config.build_settings['CLANG_CXX_LANGUAGE_STANDARD'] = 'c++17'
+          end
+
+          project.save
+          RUBY
+
+          echo "== fmt build settings after patch =="
+          grep -n "FMT_USE_CONSTEVAL\|CLANG_CXX_LANGUAGE_STANDARD" ios/Pods/Pods.xcodeproj/project.pbxproj | head -20
+          grep -n "defined(__apple_build_version__)" ios/Pods/fmt/include/fmt/base.h ios/Pods/fmt/include/fmt/core.h 2>/dev/null || true
+
+      - name: Build IPA
+        script: |
+          xcode-project build-ipa \
+            --workspace ios/*.xcworkspace \
+            --scheme AssetChopper \
+            --config Release
+
+    artifacts:
+      - build/ios/ipa/*.ipa
+      - /tmp/xcodebuild_logs/*.log
+
+    publishing:
+      app_store_connect:
+        auth: integration
+        submit_to_testflight: true
