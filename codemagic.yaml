@@ -8,12 +8,10 @@ workflows:
       app_store_connect: codemagicFlutter
 
     environment:
-      # MANUAL code signing — use the certificate + provisioning profiles that
-      # were uploaded to Codemagic (Teams → Code signing identities), referenced
-      # here by their Reference names. This replaces the automatic
-      # `fetch-signing-files` approach, which was pulling a stale profile from
-      # Apple that lacked the App Groups capability. With references you must NOT
-      # set distribution_type / bundle_identifier.
+      # MANUAL code signing — use the certificate + provisioning profile uploaded
+      # to Codemagic (Teams → Code signing identities), referenced here by their
+      # Reference names. Keep distribution_type / bundle_identifier unset when
+      # using explicit signing references.
       ios_signing:
         provisioning_profiles:
           - profile: "Asset Chopper"    # com.chopper.app
@@ -22,18 +20,15 @@ workflows:
       groups:
         - Ios_signing
       node: latest
-      # Use the latest Xcode (26) so we build against the iOS 26 SDK — Apple now
-      # rejects App Store / TestFlight uploads built with an older SDK. Xcode 26's
-      # clang rejects the older `fmt` C++ lib RN 0.79 ships ("call to consteval
-      # function ... is not a constant expression"); the withFmtConsteval config
-      # plugin (plugins/withFmtConsteval.js) patches the Podfile to neutralise
-      # that at build time, so we no longer need to pin an older Xcode.
+      # Xcode latest may use clang versions that reject RN 0.79 fmt consteval
+      # code. The Expo config plugin at plugins/withFmtConsteval.js patches
+      # the generated Podfile during prebuild to define FMT_USE_CONSTEVAL=0
+      # for the fmt pod before pod install/build.
       xcode: latest
       cocoapods: default
       vars:
         IOS_BUNDLE_IDENTIFIER: com.chopper.app
-        # AssetChopper is SDK 53 / RN 0.79 on the OLD architecture.
-        RCT_NEW_ARCH_ENABLED: "0"
+        RCT_NEW_ARCH_ENABLED: "1"
 
     scripts:
       - name: Print iOS signing assets detected by Codemagic
@@ -59,18 +54,10 @@ workflows:
 
       - name: Install dependencies (pnpm)
         script: |
-          # Run pnpm via npx, NOT corepack. The corepack bundled on the Xcode 16.2
-          # build image has stale signing keys and can't verify the pnpm download
-          # ("Cannot find matching keyid" at verifySignature). npx fetches
-          # pnpm@10.33.0 straight from npm and runs it — no corepack, no global
-          # install, no PATH games.
           npx --yes pnpm@10.33.0 install --no-frozen-lockfile
 
       - name: Set unique build number
         script: |
-          # Unix timestamp => always higher than the last upload, so App Store
-          # Connect never rejects a build for a duplicate version. Applied to the
-          # native project below (agvtool), after prebuild.
           echo "ASSETCHOPPER_BUILD_NUMBER=$(date +%s)" >> $CM_ENV
 
       - name: Expo prebuild iOS
@@ -79,15 +66,11 @@ workflows:
 
       - name: Apply build number (CFBundleVersion)
         script: |
-          # app.json has no dynamic build number, so set CFBundleVersion here.
           cd ios
           agvtool new-version -all "$ASSETCHOPPER_BUILD_NUMBER"
 
       - name: Apply provisioning profiles to the project
         script: |
-          # The certificate + profiles come from the ios_signing references above
-          # (Codemagic installs them automatically). Just point the Xcode project
-          # at them for manual signing.
           cd ios
           xcode-project use-profiles
 
